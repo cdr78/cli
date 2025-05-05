@@ -12,6 +12,7 @@ import (
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
 	"github.com/cli/cli/v2/internal/config"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/pkg/cmd/auth/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -124,7 +125,7 @@ func (e Entries) Strings(cs *iostreams.ColorScheme) []string {
 type StatusOptions struct {
 	HttpClient func() (*http.Client, error)
 	IO         *iostreams.IOStreams
-	Config     func() (config.Config, error)
+	Config     func() (gh.Config, error)
 
 	Hostname  string
 	ShowToken bool
@@ -140,12 +141,17 @@ func NewCmdStatus(f *cmdutil.Factory, runF func(*StatusOptions) error) *cobra.Co
 	cmd := &cobra.Command{
 		Use:   "status",
 		Args:  cobra.ExactArgs(0),
-		Short: "View all accounts and authentication status",
-		Long: heredoc.Doc(`Verifies and displays information about your authentication state.
+		Short: "Display active account and authentication state on each known GitHub host",
+		Long: heredoc.Docf(`
+			Display active account and authentication state on each known GitHub host.
 
-			This command will test your authentication state for each GitHub host that gh knows about and
-			report on any issues.
-		`),
+			For each host, the authentication state of each known account is tested and any issues are included in the output.
+			Each host section will indicate the active account, which will be used when targeting that host.
+			If an account on any host (or only the one given via %[1]s--hostname%[1]s) has authentication issues,
+			the command will exit with 1 and output to stderr.
+
+			To change the active account for a host, see %[1]sgh auth switch%[1]s.
+		`, "`"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runF != nil {
 				return runF(opts)
@@ -155,7 +161,7 @@ func NewCmdStatus(f *cmdutil.Factory, runF func(*StatusOptions) error) *cobra.Co
 		},
 	}
 
-	cmd.Flags().StringVarP(&opts.Hostname, "hostname", "h", "", "Check a specific hostname's auth status")
+	cmd.Flags().StringVarP(&opts.Hostname, "hostname", "h", "", "Check only a specific hostname's auth status")
 	cmd.Flags().BoolVarP(&opts.ShowToken, "show-token", "t", false, "Display the auth token")
 
 	return cmd
@@ -198,7 +204,7 @@ func statusRun(opts *StatusOptions) error {
 		}
 
 		var activeUser string
-		gitProtocol := cfg.GitProtocol(hostname)
+		gitProtocol := cfg.GitProtocol(hostname).Value
 		activeUserToken, activeUserTokenSource := authCfg.ActiveToken(hostname)
 		if authTokenWriteable(activeUserTokenSource) {
 			activeUser, _ = authCfg.ActiveUser(hostname)
@@ -213,6 +219,10 @@ func statusRun(opts *StatusOptions) error {
 			username:    activeUser,
 		})
 		statuses[hostname] = append(statuses[hostname], entry)
+
+		if err == nil && !isValidEntry(entry) {
+			err = cmdutil.SilentError
+		}
 
 		users := authCfg.UsersForHost(hostname)
 		for _, username := range users {
@@ -230,6 +240,10 @@ func statusRun(opts *StatusOptions) error {
 				username:    username,
 			})
 			statuses[hostname] = append(statuses[hostname], entry)
+
+			if err == nil && !isValidEntry(entry) {
+				err = cmdutil.SilentError
+			}
 		}
 	}
 
@@ -240,15 +254,20 @@ func statusRun(opts *StatusOptions) error {
 			continue
 		}
 
+		stream := stdout
+		if err != nil {
+			stream = stderr
+		}
+
 		if prevEntry {
-			fmt.Fprint(stdout, "\n")
+			fmt.Fprint(stream, "\n")
 		}
 		prevEntry = true
-		fmt.Fprintf(stdout, "%s\n", cs.Bold(hostname))
-		fmt.Fprintf(stdout, "%s", strings.Join(entries.Strings(cs), "\n"))
+		fmt.Fprintf(stream, "%s\n", cs.Bold(hostname))
+		fmt.Fprintf(stream, "%s", strings.Join(entries.Strings(cs), "\n"))
 	}
 
-	return nil
+	return err
 }
 
 func displayToken(token string, printRaw bool) string {
@@ -352,4 +371,9 @@ func buildEntry(httpClient *http.Client, opts buildEntryOptions) Entry {
 
 func authTokenWriteable(src string) bool {
 	return !strings.HasSuffix(src, "_TOKEN")
+}
+
+func isValidEntry(entry Entry) bool {
+	_, ok := entry.(validEntry)
+	return ok
 }

@@ -6,7 +6,8 @@ import (
 
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
-	"github.com/cli/cli/v2/internal/config"
+	ghContext "github.com/cli/cli/v2/context"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/secret/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
@@ -17,14 +18,17 @@ import (
 type DeleteOptions struct {
 	HttpClient func() (*http.Client, error)
 	IO         *iostreams.IOStreams
-	Config     func() (config.Config, error)
+	Config     func() (gh.Config, error)
 	BaseRepo   func() (ghrepo.Interface, error)
+	Remotes    func() (ghContext.Remotes, error)
 
 	SecretName  string
 	OrgName     string
 	EnvName     string
 	UserSecrets bool
 	Application string
+
+	HasRepoOverride bool
 }
 
 func NewCmdDelete(f *cmdutil.Factory, runF func(*DeleteOptions) error) *cobra.Command {
@@ -32,6 +36,7 @@ func NewCmdDelete(f *cmdutil.Factory, runF func(*DeleteOptions) error) *cobra.Co
 		IO:         f.IOStreams,
 		Config:     f.Config,
 		HttpClient: f.HttpClient,
+		Remotes:    f.Remotes,
 	}
 
 	cmd := &cobra.Command{
@@ -52,6 +57,8 @@ func NewCmdDelete(f *cmdutil.Factory, runF func(*DeleteOptions) error) *cobra.Co
 			if err := cmdutil.MutuallyExclusive("specify only one of `--org`, `--env`, or `--user`", opts.OrgName != "", opts.EnvName != "", opts.UserSecrets); err != nil {
 				return err
 			}
+
+			opts.HasRepoOverride = cmd.Flags().Changed("repo")
 
 			opts.SecretName = args[0]
 
@@ -103,18 +110,11 @@ func removeRun(opts *DeleteOptions) error {
 		if err != nil {
 			return err
 		}
-	}
 
-	var path string
-	switch secretEntity {
-	case shared.Organization:
-		path = fmt.Sprintf("orgs/%s/%s/secrets/%s", orgName, secretApp, opts.SecretName)
-	case shared.Environment:
-		path = fmt.Sprintf("repos/%s/environments/%s/secrets/%s", ghrepo.FullName(baseRepo), envName, opts.SecretName)
-	case shared.User:
-		path = fmt.Sprintf("user/codespaces/secrets/%s", opts.SecretName)
-	case shared.Repository:
-		path = fmt.Sprintf("repos/%s/%s/secrets/%s", ghrepo.FullName(baseRepo), secretApp, opts.SecretName)
+		err = cmdutil.ValidateHasOnlyOneRemote(opts.HasRepoOverride, opts.Remotes)
+		if err != nil {
+			return err
+		}
 	}
 
 	cfg, err := opts.Config()
@@ -122,7 +122,22 @@ func removeRun(opts *DeleteOptions) error {
 		return err
 	}
 
-	host, _ := cfg.Authentication().DefaultHost()
+	var path string
+	var host string
+	switch secretEntity {
+	case shared.Organization:
+		path = fmt.Sprintf("orgs/%s/%s/secrets/%s", orgName, secretApp, opts.SecretName)
+		host, _ = cfg.Authentication().DefaultHost()
+	case shared.Environment:
+		path = fmt.Sprintf("repos/%s/environments/%s/secrets/%s", ghrepo.FullName(baseRepo), envName, opts.SecretName)
+		host = baseRepo.RepoHost()
+	case shared.User:
+		path = fmt.Sprintf("user/codespaces/secrets/%s", opts.SecretName)
+		host, _ = cfg.Authentication().DefaultHost()
+	case shared.Repository:
+		path = fmt.Sprintf("repos/%s/%s/secrets/%s", ghrepo.FullName(baseRepo), secretApp, opts.SecretName)
+		host = baseRepo.RepoHost()
+	}
 
 	err = client.REST(host, "DELETE", path, nil, nil)
 	if err != nil {

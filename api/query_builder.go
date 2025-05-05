@@ -152,13 +152,13 @@ func StatusCheckRollupGraphQLWithCountByState() string {
 					contexts {
 						checkRunCount,
 						checkRunCountsByState {
-						  state,
-						  count
+							state,
+							count
 						},
 						statusContextCount,
 						statusContextCountsByState {
-						  state,
-						  count
+							state,
+							count
 						}
 					}
 				}
@@ -249,7 +249,7 @@ func RequiredStatusCheckRollupGraphQL(prID, after string, includeEvent bool) str
 	}`), afterClause, prID, eventField)
 }
 
-var IssueFields = []string{
+var sharedIssuePRFields = []string{
 	"assignees",
 	"author",
 	"body",
@@ -270,7 +270,18 @@ var IssueFields = []string{
 	"url",
 }
 
-var PullRequestFields = append(IssueFields,
+// Some fields are only valid in the context of issues.
+// They need to be enumerated separately in order to be filtered
+// from existing code that expects to be able to pass Issue fields
+// to PR queries, e.g. the PullRequestGraphql function.
+var issueOnlyFields = []string{
+	"isPinned",
+	"stateReason",
+}
+
+var IssueFields = append(sharedIssuePRFields, issueOnlyFields...)
+
+var PullRequestFields = append(sharedIssuePRFields,
 	"additions",
 	"autoMergeRequest",
 	"baseRefName",
@@ -278,6 +289,7 @@ var PullRequestFields = append(IssueFields,
 	"commits",
 	"deletions",
 	"files",
+	"fullDatabaseId",
 	"headRefName",
 	"headRefOid",
 	"headRepository",
@@ -363,10 +375,9 @@ func IssueGraphQL(fields []string) string {
 // PullRequestGraphQL constructs a GraphQL query fragment for a set of pull request fields.
 // It will try to sanitize the fields to just those available on pull request.
 func PullRequestGraphQL(fields []string) string {
-	invalidFields := []string{"isPinned", "stateReason"}
 	s := set.NewStringSet()
 	s.AddValues(fields)
-	s.RemoveValues(invalidFields)
+	s.RemoveValues(issueOnlyFields)
 	return IssueGraphQL(s.ToSlice())
 }
 

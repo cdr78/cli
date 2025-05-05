@@ -10,6 +10,7 @@ import (
 
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/internal/config"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/httpmock"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -80,7 +81,7 @@ func Test_statusRun(t *testing.T) {
 		opts       StatusOptions
 		env        map[string]string
 		httpStubs  func(*httpmock.Registry)
-		cfgStubs   func(*testing.T, config.Config)
+		cfgStubs   func(*testing.T, gh.Config)
 		wantErr    error
 		wantOut    string
 		wantErrOut string
@@ -90,7 +91,7 @@ func Test_statusRun(t *testing.T) {
 			opts: StatusOptions{
 				Hostname: "github.com",
 			},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "github.com", "monalisa", "abc123", "https")
 			},
 			httpStubs: func(reg *httpmock.Registry) {
@@ -99,7 +100,8 @@ func Test_statusRun(t *testing.T) {
 					return nil, context.DeadlineExceeded
 				})
 			},
-			wantOut: heredoc.Doc(`
+			wantErr: cmdutil.SilentError,
+			wantErrOut: heredoc.Doc(`
 				github.com
 				  X Timeout trying to log in to github.com account monalisa (GH_CONFIG_DIR/hosts.yml)
 				  - Active account: true
@@ -110,7 +112,7 @@ func Test_statusRun(t *testing.T) {
 			opts: StatusOptions{
 				Hostname: "ghe.io",
 			},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "github.com", "monalisa", "gho_abc123", "https")
 				login(t, c, "ghe.io", "monalisa-ghe", "gho_abc123", "https")
 			},
@@ -130,7 +132,7 @@ func Test_statusRun(t *testing.T) {
 		{
 			name: "missing scope",
 			opts: StatusOptions{},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "ghe.io", "monalisa-ghe", "gho_abc123", "https")
 			},
 			httpStubs: func(reg *httpmock.Registry) {
@@ -151,14 +153,60 @@ func Test_statusRun(t *testing.T) {
 		{
 			name: "bad token",
 			opts: StatusOptions{},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "ghe.io", "monalisa-ghe", "gho_abc123", "https")
 			},
 			httpStubs: func(reg *httpmock.Registry) {
 				// mock for HeaderHasMinimumScopes api requests to a non-github.com host
 				reg.Register(httpmock.REST("GET", "api/v3/"), httpmock.StatusStringResponse(400, "no bueno"))
 			},
+			wantErr: cmdutil.SilentError,
+			wantErrOut: heredoc.Doc(`
+				ghe.io
+				  X Failed to log in to ghe.io account monalisa-ghe (GH_CONFIG_DIR/hosts.yml)
+				  - Active account: true
+				  - The token in GH_CONFIG_DIR/hosts.yml is invalid.
+				  - To re-authenticate, run: gh auth login -h ghe.io
+				  - To forget about this account, run: gh auth logout -h ghe.io -u monalisa-ghe
+			`),
+		},
+		{
+			name: "bad token on other host",
+			opts: StatusOptions{
+				Hostname: "ghe.io",
+			},
+			cfgStubs: func(t *testing.T, c gh.Config) {
+				login(t, c, "github.com", "monalisa", "gho_abc123", "https")
+				login(t, c, "ghe.io", "monalisa-ghe", "gho_abc123", "https")
+			},
+			httpStubs: func(reg *httpmock.Registry) {
+				// mocks for HeaderHasMinimumScopes api requests to a non-github.com host
+				reg.Register(httpmock.REST("GET", "api/v3/"), httpmock.WithHeader(httpmock.ScopesResponder("repo,read:org"), "X-Oauth-Scopes", "repo, read:org"))
+			},
 			wantOut: heredoc.Doc(`
+				ghe.io
+				  ✓ Logged in to ghe.io account monalisa-ghe (GH_CONFIG_DIR/hosts.yml)
+				  - Active account: true
+				  - Git operations protocol: https
+				  - Token: gho_******
+				  - Token scopes: 'repo', 'read:org'
+			`),
+		},
+		{
+			name: "bad token on selected host",
+			opts: StatusOptions{
+				Hostname: "ghe.io",
+			},
+			cfgStubs: func(t *testing.T, c gh.Config) {
+				login(t, c, "github.com", "monalisa", "gho_abc123", "https")
+				login(t, c, "ghe.io", "monalisa-ghe", "gho_abc123", "https")
+			},
+			httpStubs: func(reg *httpmock.Registry) {
+				// mocks for HeaderHasMinimumScopes api requests to a non-github.com host
+				reg.Register(httpmock.REST("GET", "api/v3/"), httpmock.StatusStringResponse(400, "no bueno"))
+			},
+			wantErr: cmdutil.SilentError,
+			wantErrOut: heredoc.Doc(`
 				ghe.io
 				  X Failed to log in to ghe.io account monalisa-ghe (GH_CONFIG_DIR/hosts.yml)
 				  - Active account: true
@@ -170,7 +218,7 @@ func Test_statusRun(t *testing.T) {
 		{
 			name: "all good",
 			opts: StatusOptions{},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "github.com", "monalisa", "gho_abc123", "https")
 				login(t, c, "ghe.io", "monalisa-ghe", "gho_abc123", "ssh")
 			},
@@ -204,7 +252,7 @@ func Test_statusRun(t *testing.T) {
 			name:     "token from env",
 			opts:     StatusOptions{},
 			env:      map[string]string{"GH_TOKEN": "gho_abc123"},
-			cfgStubs: func(t *testing.T, c config.Config) {},
+			cfgStubs: func(t *testing.T, c gh.Config) {},
 			httpStubs: func(reg *httpmock.Registry) {
 				reg.Register(
 					httpmock.REST("GET", ""),
@@ -225,7 +273,7 @@ func Test_statusRun(t *testing.T) {
 		{
 			name: "server-to-server token",
 			opts: StatusOptions{},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "github.com", "monalisa", "ghs_abc123", "https")
 			},
 			httpStubs: func(reg *httpmock.Registry) {
@@ -245,7 +293,7 @@ func Test_statusRun(t *testing.T) {
 		{
 			name: "PAT V2 token",
 			opts: StatusOptions{},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "github.com", "monalisa", "github_pat_abc123", "https")
 			},
 			httpStubs: func(reg *httpmock.Registry) {
@@ -267,7 +315,7 @@ func Test_statusRun(t *testing.T) {
 			opts: StatusOptions{
 				ShowToken: true,
 			},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "github.com", "monalisa", "gho_abc123", "https")
 				login(t, c, "ghe.io", "monalisa-ghe", "gho_xyz456", "https")
 			},
@@ -298,7 +346,7 @@ func Test_statusRun(t *testing.T) {
 			opts: StatusOptions{
 				Hostname: "github.example.com",
 			},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "github.com", "monalisa", "abc123", "https")
 			},
 			httpStubs:  func(reg *httpmock.Registry) {},
@@ -308,7 +356,7 @@ func Test_statusRun(t *testing.T) {
 		{
 			name: "multiple accounts on a host",
 			opts: StatusOptions{},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "github.com", "monalisa", "gho_abc123", "https")
 				login(t, c, "github.com", "monalisa-2", "gho_abc123", "https")
 			},
@@ -335,7 +383,7 @@ func Test_statusRun(t *testing.T) {
 			name: "multiple hosts with multiple accounts with environment tokens and with errors",
 			opts: StatusOptions{},
 			env:  map[string]string{"GH_ENTERPRISE_TOKEN": "gho_abc123"},
-			cfgStubs: func(t *testing.T, c config.Config) {
+			cfgStubs: func(t *testing.T, c gh.Config) {
 				login(t, c, "github.com", "monalisa", "gho_def456", "https")
 				login(t, c, "github.com", "monalisa-2", "gho_ghi789", "https")
 				login(t, c, "ghe.io", "monalisa-ghe", "gho_xyz123", "ssh")
@@ -354,7 +402,8 @@ func Test_statusRun(t *testing.T) {
 					httpmock.GraphQL(`query UserCurrent\b`),
 					httpmock.StringResponse(`{"data":{"viewer":{"login":"monalisa-ghe-2"}}}`))
 			},
-			wantOut: heredoc.Doc(`
+			wantErr: cmdutil.SilentError,
+			wantErrOut: heredoc.Doc(`
 				github.com
 				  ✓ Logged in to github.com account monalisa-2 (GH_CONFIG_DIR/hosts.yml)
 				  - Active account: true
@@ -398,7 +447,7 @@ func Test_statusRun(t *testing.T) {
 			if tt.cfgStubs != nil {
 				tt.cfgStubs(t, cfg)
 			}
-			tt.opts.Config = func() (config.Config, error) {
+			tt.opts.Config = func() (gh.Config, error) {
 				return cfg, nil
 			}
 
@@ -430,7 +479,7 @@ func Test_statusRun(t *testing.T) {
 	}
 }
 
-func login(t *testing.T, c config.Config, hostname, username, protocol, token string) {
+func login(t *testing.T, c gh.Config, hostname, username, protocol, token string) {
 	t.Helper()
 	_, err := c.Authentication().Login(hostname, username, protocol, token, false)
 	require.NoError(t, err)

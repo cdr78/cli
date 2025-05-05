@@ -9,7 +9,8 @@ import (
 
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
-	"github.com/cli/cli/v2/internal/config"
+	ghContext "github.com/cli/cli/v2/context"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/internal/tableprinter"
 	"github.com/cli/cli/v2/pkg/cmd/secret/shared"
@@ -21,8 +22,9 @@ import (
 type ListOptions struct {
 	HttpClient func() (*http.Client, error)
 	IO         *iostreams.IOStreams
-	Config     func() (config.Config, error)
+	Config     func() (gh.Config, error)
 	BaseRepo   func() (ghrepo.Interface, error)
+	Remotes    func() (ghContext.Remotes, error)
 	Now        func() time.Time
 	Exporter   cmdutil.Exporter
 
@@ -30,6 +32,8 @@ type ListOptions struct {
 	EnvName     string
 	UserSecrets bool
 	Application string
+
+	HasRepoOverride bool
 }
 
 var secretFields = []string{
@@ -47,6 +51,7 @@ func NewCmdList(f *cmdutil.Factory, runF func(*ListOptions) error) *cobra.Comman
 		IO:         f.IOStreams,
 		Config:     f.Config,
 		HttpClient: f.HttpClient,
+		Remotes:    f.Remotes,
 		Now:        time.Now,
 	}
 
@@ -69,6 +74,8 @@ func NewCmdList(f *cmdutil.Factory, runF func(*ListOptions) error) *cobra.Comman
 			if err := cmdutil.MutuallyExclusive("specify only one of `--org`, `--env`, or `--user`", opts.OrgName != "", opts.EnvName != "", opts.UserSecrets); err != nil {
 				return err
 			}
+
+			opts.HasRepoOverride = cmd.Flags().Changed("repo")
 
 			if runF != nil {
 				return runF(opts)
@@ -98,6 +105,11 @@ func listRun(opts *ListOptions) error {
 	var baseRepo ghrepo.Interface
 	if orgName == "" && !opts.UserSecrets {
 		baseRepo, err = opts.BaseRepo()
+		if err != nil {
+			return err
+		}
+
+		err = cmdutil.ValidateHasOnlyOneRemote(opts.HasRepoOverride, opts.Remotes)
 		if err != nil {
 			return err
 		}
@@ -138,7 +150,7 @@ func listRun(opts *ListOptions) error {
 	case shared.Environment:
 		secrets, err = getEnvSecrets(client, baseRepo, envName)
 	case shared.Organization, shared.User:
-		var cfg config.Config
+		var cfg gh.Config
 		var host string
 
 		cfg, err = opts.Config()

@@ -40,7 +40,7 @@ Install from our package repository for immediate access to latest releases:
 ```bash
 sudo dnf install 'dnf-command(config-manager)'
 sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
-sudo dnf install gh
+sudo dnf install gh --repo gh-cli
 ```
 
 Alternatively, install from the [community repository](https://packages.fedoraproject.org/pkgs/gh/gh/):
@@ -203,6 +203,20 @@ Nix/NixOS users can install from [nixpkgs](https://search.nixos.org/packages?que
 ```bash
 nix-env -iA nixos.gh
 ```
+
+### Flox
+
+Flox users can install from the [official community nixpkgs](https://github.com/flox/nixpkgs).
+
+```bash
+# To install
+flox install gh
+
+# To upgrade
+flox upgrade toplevel
+```
+
+For more information about Flox, see [its homepage](https://flox.dev).
 
 ### openSUSE Tumbleweed
 

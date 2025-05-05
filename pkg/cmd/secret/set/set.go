@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"github.com/cli/cli/v2/internal/prompter"
 	"io"
 	"net/http"
 	"os"
@@ -11,7 +12,8 @@ import (
 
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
-	"github.com/cli/cli/v2/internal/config"
+	ghContext "github.com/cli/cli/v2/context"
+	"github.com/cli/cli/v2/internal/gh"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmd/secret/shared"
 	"github.com/cli/cli/v2/pkg/cmdutil"
@@ -25,9 +27,10 @@ import (
 type SetOptions struct {
 	HttpClient func() (*http.Client, error)
 	IO         *iostreams.IOStreams
-	Config     func() (config.Config, error)
+	Config     func() (gh.Config, error)
 	BaseRepo   func() (ghrepo.Interface, error)
-	Prompter   iprompter
+	Remotes    func() (ghContext.Remotes, error)
+	Prompter   prompter.Prompter
 
 	RandomOverride func() io.Reader
 
@@ -41,10 +44,9 @@ type SetOptions struct {
 	RepositoryNames []string
 	EnvFile         string
 	Application     string
-}
 
-type iprompter interface {
-	Password(string) (string, error)
+	HasRepoOverride bool
+	Interactive     bool
 }
 
 func NewCmdSet(f *cmdutil.Factory, runF func(*SetOptions) error) *cobra.Command {
@@ -52,6 +54,7 @@ func NewCmdSet(f *cmdutil.Factory, runF func(*SetOptions) error) *cobra.Command 
 		IO:         f.IOStreams,
 		Config:     f.Config,
 		HttpClient: f.HttpClient,
+		Remotes:    f.Remotes,
 		Prompter:   f.Prompter,
 	}
 
@@ -76,6 +79,9 @@ func NewCmdSet(f *cmdutil.Factory, runF func(*SetOptions) error) *cobra.Command 
 
 			# Read secret value from an environment variable
 			$ gh secret set MYSECRET --body "$ENV_VALUE"
+
+			# Set secret for a specific remote repository
+			$ gh secret set MYSECRET --repo origin/repo --body "$ENV_VALUE"
 
 			# Read secret value from a file
 			$ gh secret set MYSECRET < myfile.txt
@@ -106,6 +112,8 @@ func NewCmdSet(f *cmdutil.Factory, runF func(*SetOptions) error) *cobra.Command 
 			// support `-R, --repo` override
 			opts.BaseRepo = f.BaseRepo
 
+			flagCount := cmdutil.CountSetFlags(cmd.Flags())
+
 			if err := cmdutil.MutuallyExclusive("specify only one of `--org`, `--env`, or `--user`", opts.OrgName != "", opts.EnvName != "", opts.UserSecrets); err != nil {
 				return err
 			}
@@ -124,6 +132,10 @@ func NewCmdSet(f *cmdutil.Factory, runF func(*SetOptions) error) *cobra.Command 
 				}
 			} else {
 				opts.SecretName = args[0]
+
+				if flagCount == 0 {
+					opts.Interactive = true
+				}
 			}
 
 			if cmd.Flags().Changed("visibility") {
@@ -144,6 +156,8 @@ func NewCmdSet(f *cmdutil.Factory, runF func(*SetOptions) error) *cobra.Command 
 				}
 			}
 
+			opts.HasRepoOverride = cmd.Flags().Changed("repo")
+
 			if runF != nil {
 				return runF(opts)
 			}
@@ -158,7 +172,7 @@ func NewCmdSet(f *cmdutil.Factory, runF func(*SetOptions) error) *cobra.Command 
 	cmdutil.StringEnumFlag(cmd, &opts.Visibility, "visibility", "v", shared.Private, []string{shared.All, shared.Private, shared.Selected}, "Set visibility for an organization secret")
 	cmd.Flags().StringSliceVarP(&opts.RepositoryNames, "repos", "r", []string{}, "List of `repositories` that can access an organization or user secret")
 	cmd.Flags().StringVarP(&opts.Body, "body", "b", "", "The value for the secret (reads from standard input if not specified)")
-	cmd.Flags().BoolVar(&opts.DoNotStore, "no-store", false, "Print the encrypted, base64-encoded value instead of storing it on Github")
+	cmd.Flags().BoolVar(&opts.DoNotStore, "no-store", false, "Print the encrypted, base64-encoded value instead of storing it on GitHub")
 	cmd.Flags().StringVarP(&opts.EnvFile, "env-file", "f", "", "Load secret names and values from a dotenv-formatted `file`")
 	cmdutil.StringEnumFlag(cmd, &opts.Application, "app", "a", "", []string{shared.Actions, shared.Codespaces, shared.Dependabot}, "Set the application for a secret")
 
@@ -187,6 +201,22 @@ func setRun(opts *SetOptions) error {
 		if err != nil {
 			return err
 		}
+
+		err = cmdutil.ValidateHasOnlyOneRemote(opts.HasRepoOverride, opts.Remotes)
+		if err != nil {
+			if opts.Interactive {
+				selectedRepo, errSelectedRepo := cmdutil.PromptForRepo(baseRepo, opts.Remotes, opts.Prompter)
+
+				if errSelectedRepo != nil {
+					return errSelectedRepo
+				}
+
+				baseRepo = selectedRepo
+			} else {
+				return err
+			}
+		}
+
 		host = baseRepo.RepoHost()
 	} else {
 		cfg, err := opts.Config()
